@@ -8,16 +8,17 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NOC='\033[0m'
 
+
 # Checks if a value exists in an array
 # Usage: elementIn "some_value" "${VALUES[@]}"; [[ #? -eq 0 ]] && echo "EXISTS!" || echo "DOESNT EXIST! :("
-function elementIn () {
+elementIn () {
   local e match="$1"
   shift
   for e; do [[ "$e" == "$match" ]] && return 0; done
   return 1
 }
 
-function printUsage () {
+printUsage () {
     set -e
     cat <<EOF
 AWS SSM parameter injection in Helm value files
@@ -39,7 +40,6 @@ Note: You must have IAM access to the parameters you're trying to decrypt, and t
 Note #2: Wrap the template with quotes, otherwise helm will confuse the brackets for json, and will fail rendering.
 Note #3: Currently, helm-ssm does not work when the value of the parameter is in the default chart values.
 
-
 E.g:
 helm ssm install stable/docker-registry --values value-file1.yaml -f value-file2.yaml
 
@@ -49,6 +49,12 @@ secrets:
   haSharedSecret: "{{ssm /mgmt/docker-registry/shared-secret us-east-1}}"
   htpasswd: "{{ssm /mgmt/docker-registry/htpasswd us-east-1}}"
 ---
+
+Prefix:
+If your SSM parameters have a preset you can specify it at run time using the -p or --prefix flags followed by a string
+
+E.g:
+helm ssm install stable/docker-registry --values value-file1.yaml -f value-file2.yaml -p "/some/prefix/path"
 EOF
     exit 0
 }
@@ -71,7 +77,7 @@ if [[ $# -eq 0 || "$cmd" == "help" || "$cmd" == "-h" || "$cmd" == "--help" ]]; t
 fi
 
 # if the command is not "install" or "upgrade", or just a single command (no value files is a given in this case), pass the args to the regular helm command
-if [[ $# -eq 1 || ( "$cmd" != "install" && "$cmd" != "upgrade" && "$cmd" != "template") ]]; then
+if [[ $# -eq 1 || ( "$cmd" != "install" && "$cmd" != "upgrade" ) ]]; then
     set +e # disable fail-fast
     helm "$*"
     EXIT_CODE=$?
@@ -86,6 +92,8 @@ fi
 
 VALUE_FILES=() # An array of paths to value files
 OPTIONS=() # An array of all the other options given
+PREFIX="" # prefix to use when fetching SSM Parameters (optional)
+GLOBAL_REGION="" # region override to use when fetching SSM Parameters (optional)
 while [[ "$#" -gt 0 ]]
 do
     case "$1" in
@@ -98,12 +106,29 @@ do
             VALUE_FILES+=($2) # then add the path to the array
         fi
         ;;
+    -p|--prefix)
+        if [ $# -gt 1 ]; then # if we werent given just an empty '-p' option
+            PREFIX=$2 # then add the path to the array
+        fi
+        ;;
+    -c|--colour)
+        if [ $# -gt 1 ]; then # if we werent given just an empty '-c' option
+            COLOUR=$2 # then add the path to the array
+        fi
+        ;;
+    -r|--region)
+        if [ $# -gt 1 ]; then # if we werent given just an empty '-r' option
+            GLOBAL_REGION=$2 # then add the path to the array
+        fi
+        ;;
     *)
-        # we go over each options, and if the option isnt a value file, we add it to the options array
-        set +e # we turn off fast-fail because the check of if the array contains a value returns exit code 0 or 1 depending on the result
-        elementIn "$1" "${VALUE_FILES[@]}"
-        [[ $? -eq 1 ]] && OPTIONS+=($1)
-        set -e # when we're finished with the check, we turn on fast-fail
+        if [ "$1" != "${PREFIX}" -a "$1" != "${COLOUR}" -a  "$1" != "${GLOBAL_REGION}" ]; then
+          # we go over each options, and if the option isnt a value file or prefix, we add it to the options array
+          set +e # we turn off fast-fail because the check of if the array contains a value returns exit code 0 or 1 depending on the result
+          elementIn "$1" "${VALUE_FILES[@]}"
+          [[ $? -eq 1 ]] && OPTIONS+=($1)
+          set -e # when we're finished with the check, we turn on fast-fail
+        fi
         ;;
     esac
     shift
@@ -111,6 +136,14 @@ done
 
 echo -e "${GREEN}[SSM]${NOC} Options: ${OPTIONS[@]}"
 echo -e "${GREEN}[SSM]${NOC} Value files: ${VALUE_FILES[@]}"
+
+if [[ -n ${PREFIX} ]]; then
+    echo -e "${GREEN}[SSM]${NOC} Prefix: ${PREFIX}"
+fi
+
+if [[ -n ${GLOBAL_REGION} ]]; then
+    echo -e "${GREEN}[SSM]${NOC} Region: ${GLOBAL_REGION}"
+fi
 
 set +e # we disable fail-dast because we want to give the user a proper error message in case we cant read the value file
 MERGED_TEXT=""
@@ -152,22 +185,45 @@ while read -r PARAM_STRING; do
 
     CLEANED_PARAM_STRING=$(echo ${PARAM_STRING:2} | rev | cut -c 3- | rev) # we cut the '{{' and '}}' at the beginning and end
     PARAM_PATH=$(echo ${CLEANED_PARAM_STRING:2} | cut -d' ' -f 2) # {{ssm */param/path* us-east-1}}
-    REGION=$(echo ${CLEANED_PARAM_STRING:2} | cut -d' ' -f 3) # {{ssm /param/path *us-east-1*}}
-    PROFILE=$(echo ${CLEANED_PARAM_STRING:2} | cut -d' ' -f 4) # {{ssm /param/path us-east-1 *production*}}
-    if [[ -n ${PROFILE}  ]]; then
-       PROFILE_PARAM="--profile ${PROFILE}"  
+
+    if [[ -n ${GLOBAL_REGION} ]]; then
+        REGION=${GLOBAL_REGION} # Use region provided to cli
+    else
+        REGION=$(echo ${CLEANED_PARAM_STRING:2} | cut -d' ' -f 3) # {{ssm /param/path *us-east-1*}}
     fi
-    PARAM_OUTPUT="$(aws ssm get-parameter --with-decryption --name ${PARAM_PATH} --output text --query Parameter.Value --region ${REGION} $PROFILE_PARAM  2>&1)" # Get the parameter value or error message
-    EXIT_CODE=$?
+
+
+    if [[ ! -f ${PREFIX} ]]; then
+        PARAM_PATH="${PREFIX}${PARAM_PATH}"
+    fi
+
+    if [[ -n ${COLOUR} ]]; then
+        echo -e "colour: ${COLOUR}"
+        PARAM_PATH_COLOUR=$(echo ${CLEANED_PARAM_STRING:2} | cut -d' ' -f 2) # {{ssm */param/path* us-east-1}}
+        PARAM_PATH_COLOUR="${PREFIX}/${COLOUR}${PARAM_PATH_COLOUR}"
+        echo -e "full path: ${PARAM_PATH_COLOUR}"
+
+        PARAM_OUTPUT="$(aws ssm get-parameter --with-decryption --name ${PARAM_PATH_COLOUR} --output text --query Parameter.Value --region ${REGION} 2>&1)" # Get the parameter value or error message
+        EXIT_CODE=$?
+
+        if [[ ${EXIT_CODE} -ne 0 ]]; then
+            PARAM_OUTPUT="$(aws ssm get-parameter --with-decryption --name ${PARAM_PATH} --output text --query Parameter.Value --region ${REGION} 2>&1)" # Get the parameter value or error message
+            EXIT_CODE=$?
+        fi
+    else
+        PARAM_OUTPUT="$(aws ssm get-parameter --with-decryption --name ${PARAM_PATH} --output text --query Parameter.Value --region ${REGION} 2>&1)" # Get the parameter value or error message
+        EXIT_CODE=$?
+    fi
+
+
 
     if [[ ${EXIT_CODE} -ne 0 ]]; then
         echo -e "${RED}[SSM]${NOC} Error: Could not get parameter: ${PARAM_PATH}. AWS cli output: ${PARAM_OUTPUT}" >&2
         exit 1
     fi
 
-    SECRET_TEXT="$(echo -e "${PARAM_OUTPUT}" | sed -e 's/[]\&\/$*.^[]/\\&/g')"
-    MERGED_TEXT=$(echo -e "${MERGED_TEXT}" | sed "s|${PARAM_STRING}|${SECRET_TEXT}|g")
-    sleep 0.5 # very basic rate limits
+    MERGED_TEXT=$(echo -e "${MERGED_TEXT//${PARAM_STRING}/${PARAM_OUTPUT}}")
+    sleep 0.1 # very basic rate limits
 done <<< "${PARAMETERS}"
 
 set +e

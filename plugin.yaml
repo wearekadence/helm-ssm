@@ -1,5 +1,5 @@
 name: "ssm"
-version: "1.0.4"
+version: "1.0.6"
 usage: "AWS SSM parameter injection into Helm value files for git storage"
 description: |-
   AWS SSM parameter injection in Helm value files
@@ -29,5 +29,11 @@ description: |-
     haSharedSecret: {{ssm /mgmt/docker-registry/shared-secret us-east-1}}
     htpasswd: {{ssm /mgmt/docker-registry/htpasswd us-east-1}}
   ---
+
+  Prefix:
+  If your SSM parameters have a preset you can specify it at run time using the -p or --prefix flags followed by a string
+
+  E.g:
+  helm ssm install stable/docker-registry --values value-file1.yaml -f value-file2.yaml -p "/some/prefix/path"
 command: "$HELM_PLUGIN_DIR/ssm.sh"
 useTunnel: true
