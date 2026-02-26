@@ -192,7 +192,6 @@ while read -r PARAM_STRING; do
         REGION=$(echo ${CLEANED_PARAM_STRING:2} | cut -d' ' -f 3) # {{ssm /param/path *us-east-1*}}
     fi
 
-
     if [[ ! -f ${PREFIX} ]]; then
         PARAM_PATH="${PREFIX}${PARAM_PATH}"
     fi
@@ -218,7 +217,7 @@ while read -r PARAM_STRING; do
 
 
     if [[ ${EXIT_CODE} -ne 0 ]]; then
-        echo -e "${RED}[SSM]${NOC} Error: Could not get parameter: ${PARAM_PATH}. AWS cli output: ${PARAM_OUTPUT}" >&2
+        echo -e "${RED}[SSM]${NOC} Error: Could not get parameter: ${PARAM_PATH}. REGION: ${REGION} AWS cli output: ${PARAM_OUTPUT}" >&2
         exit 1
     fi
 
