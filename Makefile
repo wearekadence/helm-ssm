@@ -28,6 +28,10 @@ build:
 test:
 	go test -v ./internal
 
+.PHONY: test-integration
+test-integration:
+	go test -tags=integration -v ./internal/integration
+
 .PHONY: dist
 dist:
 	mkdir -p $(DIST)

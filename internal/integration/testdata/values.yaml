@@ -1,0 +1,6 @@
+service:
+  hostname: api.{{ssm "/integration/subdomain" }}
+  fallback: {{ssm "/integration/missing" "default=fallback-value" }}
+  secret: {{ssm "/integration/secret" }}
+  prefixed: {{ssm "/subdomain" "prefix=/integration" }}
+  regional: {{ssm "/integration/regional" "region=us-east-1" }}

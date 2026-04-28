@@ -15,6 +15,16 @@ import (
 	"github.com/aws/aws-sdk-go/service/ssm/ssmiface"
 )
 
+// endpointOverride matches the env-var convention used by aws-sdk-go-v2 so the same
+// override works after a future SDK upgrade. Unset in normal use; set to a LocalStack
+// URL during integration tests.
+func endpointOverride() string {
+	if e := os.Getenv("AWS_ENDPOINT_URL_SSM"); e != "" {
+		return e
+	}
+	return os.Getenv("AWS_ENDPOINT_URL")
+}
+
 // WriteFileD dumps a given content on the file with path `targetDir/fileName`.
 func WriteFileD(fileName string, targetDir string, content string) error {
 	targetFilePath := targetDir + "/" + fileName
@@ -137,9 +147,12 @@ func handleOptions(options []string) (map[string]string, error) {
 
 func newAWSSession(profile string) *session.Session {
 	// Specify profile for config and region for requests
-	session := session.Must(session.NewSessionWithOptions(session.Options{
+	opts := session.Options{
 		SharedConfigState: session.SharedConfigEnable,
 		Profile:           profile,
-	}))
-	return session
+	}
+	if endpoint := endpointOverride(); endpoint != "" {
+		opts.Config = aws.Config{Endpoint: aws.String(endpoint)}
+	}
+	return session.Must(session.NewSessionWithOptions(opts))
 }
