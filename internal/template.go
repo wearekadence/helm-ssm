@@ -43,19 +43,166 @@ func ExecuteTemplate(sourceFilePath string, funcMap template.FuncMap, verbose bo
 	if err != nil {
 		return "", err
 	}
+	return renderTemplate(string(fileContent), funcMap, verbose)
+}
+
+// ExecuteTemplateWithBatching renders the template at sourceFilePath in two
+// passes. The first pass runs against a func map whose `ssm` is a stub that
+// records every (path, region) it sees and returns an empty string; the
+// rendered output is discarded. Recorded paths are then resolved via
+// ssm:GetParameters in batches of up to ten names, grouped by region. The
+// second pass renders the real output using a func map whose `ssm` looks up
+// the resolved value from the cache. When clean is true, no AWS calls are
+// made and the function falls back to a single-pass render with the cleaning
+// func map.
+func ExecuteTemplateWithBatching(sourceFilePath, profile, prefix, tagCleaned string, clean, verbose bool) (string, error) {
+	fileContent, err := ioutil.ReadFile(sourceFilePath)
+	if err != nil {
+		return "", err
+	}
+	if clean {
+		return renderTemplate(string(fileContent), GetFuncMap(profile, prefix, true, tagCleaned), verbose)
+	}
+
+	defaults := map[ssmKey]string{}
+	calls := map[ssmKey]bool{}
+	discoveryMap := sprigFuncMap()
+	discoveryMap["ssm"] = func(ssmPath string, options ...string) (string, error) {
+		opts, err := handleOptions(applyDefaultPrefix(options, prefix))
+		if err != nil {
+			return "", err
+		}
+		key := ssmKey{path: opts["prefix"] + ssmPath, region: opts["region"]}
+		if !calls[key] {
+			calls[key] = true
+			if d, ok := opts["default"]; ok {
+				defaults[key] = d
+			}
+		}
+		return "", nil
+	}
+	if _, err := renderTemplate(string(fileContent), discoveryMap, false); err != nil {
+		return "", err
+	}
+
+	resolved, err := resolveBatched(newAWSSession(profile), calls, defaults)
+	if err != nil {
+		return "", err
+	}
+
+	renderMap := sprigFuncMap()
+	renderMap["ssm"] = func(ssmPath string, options ...string) (string, error) {
+		opts, err := handleOptions(applyDefaultPrefix(options, prefix))
+		if err != nil {
+			return "", err
+		}
+		key := ssmKey{path: opts["prefix"] + ssmPath, region: opts["region"]}
+		v, ok := resolved[key]
+		if !ok {
+			return "", fmt.Errorf("internal: %q (region=%q) not pre-resolved", key.path, key.region)
+		}
+		return v, nil
+	}
+	return renderTemplate(string(fileContent), renderMap, verbose)
+}
+
+// ssmKey identifies a unique parameter request by post-prefix path and region.
+// Region "" means "use the session default region".
+type ssmKey struct {
+	path   string
+	region string
+}
+
+func renderTemplate(content string, funcMap template.FuncMap, verbose bool) (string, error) {
 	t := template.New("ssmtpl").Funcs(funcMap)
-	if _, err := t.Parse(string(fileContent)); err != nil {
+	if _, err := t.Parse(content); err != nil {
 		return "", err
 	}
 	var buf bytes.Buffer
-	vals := map[string]interface{}{}
-	if err := t.Execute(&buf, vals); err != nil {
+	if err := t.Execute(&buf, map[string]interface{}{}); err != nil {
 		return "", err
 	}
 	if verbose {
-		fmt.Println(string(buf.Bytes()))
+		fmt.Println(buf.String())
 	}
 	return buf.String(), nil
+}
+
+func sprigFuncMap() template.FuncMap {
+	fm := template.FuncMap{}
+	for k, v := range sprig.GenericFuncMap() {
+		fm[k] = v
+	}
+	return fm
+}
+
+func applyDefaultPrefix(options []string, prefix string) []string {
+	for _, s := range options {
+		if strings.HasPrefix(s, "prefix=") {
+			return options
+		}
+	}
+	return append(options, "prefix="+prefix)
+}
+
+// resolveBatched fetches every recorded (path, region) tuple via
+// ssm:GetParameters, grouped by region and chunked at ten names per call (the
+// SSM API limit). Missing parameters fall back to the recorded default; if no
+// default was set, a not-found error propagates.
+func resolveBatched(sess *session.Session, calls map[ssmKey]bool, defaults map[ssmKey]string) (map[ssmKey]string, error) {
+	resolved := map[ssmKey]string{}
+	if len(calls) == 0 {
+		return resolved, nil
+	}
+
+	byRegion := map[string][]ssmKey{}
+	for k := range calls {
+		byRegion[k.region] = append(byRegion[k.region], k)
+	}
+
+	decrypt := true
+	for region, keys := range byRegion {
+		var svc ssmiface.SSMAPI
+		if region != "" {
+			svc = ssm.New(sess, aws.NewConfig().WithRegion(region))
+		} else {
+			svc = ssm.New(sess)
+		}
+		const batchSize = 10
+		for i := 0; i < len(keys); i += batchSize {
+			end := i + batchSize
+			if end > len(keys) {
+				end = len(keys)
+			}
+			chunk := keys[i:end]
+			names := make([]string, len(chunk))
+			byName := make(map[string]ssmKey, len(chunk))
+			for j, k := range chunk {
+				names[j] = k.path
+				byName[k.path] = k
+			}
+			out, err := svc.GetParameters(&ssm.GetParametersInput{
+				Names:          aws.StringSlice(names),
+				WithDecryption: &decrypt,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, p := range out.Parameters {
+				k := byName[aws.StringValue(p.Name)]
+				resolved[k] = aws.StringValue(p.Value)
+			}
+			for _, name := range out.InvalidParameters {
+				k := byName[aws.StringValue(name)]
+				if d, ok := defaults[k]; ok {
+					resolved[k] = d
+					continue
+				}
+				return nil, fmt.Errorf("ParameterNotFound: %s (region=%q)", k.path, k.region)
+			}
+		}
+	}
+	return resolved, nil
 }
 
 // GetFuncMap builds the relevant function map to helm_ssm

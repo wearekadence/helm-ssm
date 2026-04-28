@@ -52,11 +52,19 @@ func requireLocalstack(t *testing.T) string {
 // the same code path it's exercising.
 func newSeederClient(t *testing.T, endpoint string) *ssm.SSM {
 	t.Helper()
+	return newSeederClientForRegion(t, endpoint, testRegion)
+}
+
+// newSeederClientForRegion is the region-aware variant — needed when seeding
+// parameters across multiple regions, since LocalStack scopes SSM state per
+// region.
+func newSeederClientForRegion(t *testing.T, endpoint, region string) *ssm.SSM {
+	t.Helper()
 	sess, err := session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigDisable,
 		Config: aws.Config{
 			Endpoint:    aws.String(endpoint),
-			Region:      aws.String(testRegion),
+			Region:      aws.String(region),
 			Credentials: credentials.NewStaticCredentials(testAccessKey, testSecretKey, ""),
 		},
 	})

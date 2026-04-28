@@ -62,9 +62,8 @@ func main() {
 }
 
 func run(cmd *cobra.Command, args []string) error {
-	funcMap := hssm.GetFuncMap(profile, prefix, clean, tagCleaned)
 	for _, filePath := range valueFiles {
-		content, err := hssm.ExecuteTemplate(filePath, funcMap, verbose)
+		content, err := hssm.ExecuteTemplateWithBatching(filePath, profile, prefix, tagCleaned, clean, verbose)
 		if err != nil {
 			return err
 		}
