@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Test shim: stand in for helm during integration tests. ssm.sh ends with
+# `helm <opts> --values -`, piping the rendered YAML on stdin. The shim
+# prints stdin so tests can assert on the resolved values, plus a header
+# line that captures the args helm would have been invoked with.
+echo "[shim] helm $*"
+cat
