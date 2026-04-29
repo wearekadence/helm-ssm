@@ -71,18 +71,6 @@ assert_contains() {
     fi
 }
 
-assert_not_contains() {
-    local needle="$1"
-    local haystack="$2"
-    if ! grep -qF -- "${needle}" <<<"${haystack}"; then
-        echo "    ✔ does not contain: ${needle}"
-    else
-        FAIL=$((FAIL + 1))
-        echo "    ✘ UNEXPECTED PRESENCE OF: ${needle}"
-        return 1
-    fi
-}
-
 assert_eq() {
     local expected="$1" actual="$2" label="${3:-value}"
     if [[ "${expected}" == "${actual}" ]]; then
