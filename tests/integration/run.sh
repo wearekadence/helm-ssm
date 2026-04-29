@@ -96,12 +96,12 @@ assert_eq() {
 
 run_ssm() {
     # Run ssm.sh; capture both streams. Always returns the raw output for
-    # caller-side assertion, plus the exit code in $RUN_EXIT.
+    # caller-side assertion, plus the exit code in $RUN_EXIT. The script
+    # runs without `set -e` so that failing assertions don't abort the
+    # whole suite — see the FAIL counter and final summary instead.
     cd "${REPO_ROOT}"
-    set +e
     RUN_OUTPUT=$(./ssm.sh "$@" 2>&1)
     RUN_EXIT=$?
-    set -e || true
 }
 
 # ---------------------------------------------------------------- tests --
