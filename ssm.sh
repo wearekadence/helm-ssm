@@ -248,10 +248,14 @@ for PF_REGION in "${!SSM_FETCH_NAMES_BY_REGION[@]}"; do
             exit 1
         fi
 
-        while IFS=$'\t' read -r PF_NAME PF_VALUE; do
+        # Emit name/value pairs separated by NUL bytes so that values
+        # containing newlines, tabs, or backslashes (PEM certificates, SSH
+        # keys, JSON blobs, etc.) survive the boundary intact. `@tsv` would
+        # have escaped them into literal `\n`/`\t`/`\\` sequences.
+        while IFS= read -r -d '' PF_NAME && IFS= read -r -d '' PF_VALUE; do
             [ -z "${PF_NAME}" ] && continue
             SSM_CACHE["${PF_NAME}|${PF_REGION}"]="${PF_VALUE}"
-        done < <(echo "${PF_RESPONSE}" | jq -r '.Parameters[] | [.Name, .Value] | @tsv')
+        done < <(echo "${PF_RESPONSE}" | jq -j '.Parameters[] | "\(.Name)\u0000\(.Value)\u0000"')
     done
 done
 

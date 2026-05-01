@@ -188,6 +188,40 @@ assert_contains "Could not get parameter" "${RUN_OUTPUT}"
 PASS=$((PASS + 1))
 cleanup_seeded
 
+start_test "multi-line SecureString preserves newlines (PEM-style)"
+PEM_VALUE=$'-----BEGIN CERTIFICATE-----\nMIIDazCCAlOgAwIBAgIULineTwo\nLineThreeOfTheCert\n-----END CERTIFICATE-----'
+put_param "/it/multiline/cert" "${PEM_VALUE}" us-east-1 SecureString
+cat >/tmp/it_values_pem.yaml <<'EOF'
+secret: |
+  {{ssm /it/multiline/cert us-east-1}}
+EOF
+run_ssm install testrelease ./tests/testchart --values /tmp/it_values_pem.yaml
+assert_eq "0" "${RUN_EXIT}" "exit code"
+assert_contains "-----BEGIN CERTIFICATE-----" "${RUN_OUTPUT}"
+assert_contains "MIIDazCCAlOgAwIBAgIULineTwo" "${RUN_OUTPUT}"
+assert_contains "LineThreeOfTheCert" "${RUN_OUTPUT}"
+assert_contains "-----END CERTIFICATE-----" "${RUN_OUTPUT}"
+# The literal two-character sequence backslash-n must NOT appear — that
+# would mean jq @tsv (or similar) had escaped newlines instead of preserving
+# them as real bytes.
+if grep -qF '\n-----' <<<"${RUN_OUTPUT}"; then
+    FAIL=$((FAIL + 1))
+    echo "    ✘ multiline value contains literal '\\n' escape — newlines were corrupted"
+else
+    echo "    ✔ no literal '\\n' escape — newlines preserved as actual bytes"
+fi
+# BEGIN and END must land on different lines in the rendered output.
+BEGIN_LINE=$(grep -n "BEGIN CERTIFICATE" <<<"${RUN_OUTPUT}" | head -1 | cut -d: -f1)
+END_LINE=$(grep -n "END CERTIFICATE" <<<"${RUN_OUTPUT}" | head -1 | cut -d: -f1)
+if [[ -n "${BEGIN_LINE}" && -n "${END_LINE}" && "${BEGIN_LINE}" != "${END_LINE}" ]]; then
+    echo "    ✔ BEGIN at line ${BEGIN_LINE}, END at line ${END_LINE}"
+else
+    FAIL=$((FAIL + 1))
+    echo "    ✘ BEGIN line=${BEGIN_LINE}, END line=${END_LINE} — expected on different lines"
+fi
+PASS=$((PASS + 1))
+cleanup_seeded
+
 start_test "duplicate placeholder dedupes in pre-fetch"
 put_param "/it/dup/p1" "dup-value"
 cat >/tmp/it_values_dup.yaml <<EOF
