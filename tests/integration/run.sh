@@ -53,7 +53,17 @@ put_param() {
 
 start_test() {
     CURRENT_TEST="$1"
+    # Snapshot FAIL so end_test can tell whether any assertion in this block
+    # bumped it. Without this, PASS would always increment regardless of
+    # in-test failures, giving a misleading summary.
+    TEST_FAIL_BASELINE=$FAIL
     echo "==> ${CURRENT_TEST}"
+}
+
+end_test() {
+    if (( FAIL == TEST_FAIL_BASELINE )); then
+        PASS=$((PASS + 1))
+    fi
 }
 
 assert_contains() {
@@ -103,7 +113,7 @@ run_ssm install testrelease ./tests/testchart --values /tmp/it_values_single.yam
 assert_eq "0" "${RUN_EXIT}" "exit code"
 assert_contains 'secret: "hello-world"' "${RUN_OUTPUT}"
 assert_contains "Pre-fetched 1 parameter(s) across 1 region(s)" "${RUN_OUTPUT}"
-PASS=$((PASS + 1))
+end_test
 cleanup_seeded
 
 start_test "batched call counts: 25 params across two regions in 3 calls"
@@ -153,7 +163,7 @@ if [[ "${SNAPSHOT_OK}" == "1" ]]; then
 else
     echo "    (skipping API call-count assertions — LocalStack container '${LS_CONTAINER}' not visible)"
 fi
-PASS=$((PASS + 1))
+end_test
 cleanup_seeded
 
 start_test "global prefix flag"
@@ -164,7 +174,7 @@ EOF
 run_ssm install testrelease ./tests/testchart --values /tmp/it_values_prefix.yaml --prefix /it/prefixed
 assert_eq "0" "${RUN_EXIT}" "exit code"
 assert_contains 'secret: "from-prefix"' "${RUN_OUTPUT}"
-PASS=$((PASS + 1))
+end_test
 cleanup_seeded
 
 start_test "SecureString is decrypted"
@@ -175,7 +185,7 @@ EOF
 run_ssm install testrelease ./tests/testchart --values /tmp/it_values_secure.yaml
 assert_eq "0" "${RUN_EXIT}" "exit code"
 assert_contains 'secret: "shhh-its-a-secret"' "${RUN_OUTPUT}"
-PASS=$((PASS + 1))
+end_test
 cleanup_seeded
 
 start_test "missing parameter exits non-zero"
@@ -185,7 +195,7 @@ EOF
 run_ssm install testrelease ./tests/testchart --values /tmp/it_values_missing.yaml
 assert_eq "1" "${RUN_EXIT}" "exit code"
 assert_contains "Could not get parameter" "${RUN_OUTPUT}"
-PASS=$((PASS + 1))
+end_test
 cleanup_seeded
 
 start_test "multi-line SecureString preserves newlines (PEM-style)"
@@ -219,7 +229,7 @@ else
     FAIL=$((FAIL + 1))
     echo "    ✘ BEGIN line=${BEGIN_LINE}, END line=${END_LINE} — expected on different lines"
 fi
-PASS=$((PASS + 1))
+end_test
 cleanup_seeded
 
 start_test "duplicate placeholder dedupes in pre-fetch"
@@ -235,7 +245,7 @@ assert_contains 'a: "dup-value"' "${RUN_OUTPUT}"
 assert_contains 'b: "dup-value"' "${RUN_OUTPUT}"
 assert_contains 'c: "dup-value"' "${RUN_OUTPUT}"
 assert_contains "Pre-fetched 1 parameter(s) across 1 region(s)" "${RUN_OUTPUT}"
-PASS=$((PASS + 1))
+end_test
 cleanup_seeded
 
 # --------------------------------------------------------------- summary --
