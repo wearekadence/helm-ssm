@@ -66,6 +66,16 @@ if ! [[ -x "$(command -v aws)" ]]; then
     echo -e "${RED}[ERROR] aws cli is not installed." >&2
     exit 1
 fi
+# jq (used to parse aws ssm get-parameters JSON responses)
+if ! [[ -x "$(command -v jq)" ]]; then
+    echo -e "${RED}[ERROR] jq is not installed." >&2
+    exit 1
+fi
+# bash 4+ (associative arrays)
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo -e "${RED}[ERROR] bash 4 or newer required (found ${BASH_VERSION})." >&2
+    exit 1
+fi
 
 
 # get the first command (install\list\template\etc...)
@@ -179,7 +189,84 @@ echo -e "==============================================="
 
 
 set +e
-# using 'while' instead of 'for' allows us to use newline as a delimiter instead of a space
+
+# --- Pre-fetch phase -----------------------------------------------------
+# Resolve every (name, region) up front in batches of up to ten via
+# `aws ssm get-parameters --names ...`. This collapses N sequential
+# get-parameter invocations (each paying Python CLI cold-start plus an
+# HTTPS round-trip) into ceil(N/10) calls per region. SSM_CACHE is keyed
+# by "${name}|${region}".
+
+declare -A SSM_CACHE=()
+declare -A SSM_FETCH_NAMES_BY_REGION=()
+
+while read -r PARAM_STRING; do
+    [ -z "${PARAM_STRING}" ] && continue
+    PF_CLEANED=$(echo ${PARAM_STRING:2} | rev | cut -c 3- | rev)
+    PF_RAW_PATH=$(echo ${PF_CLEANED:2} | cut -d' ' -f 2)
+    if [[ -n ${GLOBAL_REGION} ]]; then
+        PF_REGION=${GLOBAL_REGION}
+    else
+        PF_REGION=$(echo ${PF_CLEANED:2} | cut -d' ' -f 3)
+    fi
+    if [[ ! -f ${PREFIX} ]]; then
+        PF_PLAIN_NAME="${PREFIX}${PF_RAW_PATH}"
+    else
+        PF_PLAIN_NAME="${PF_RAW_PATH}"
+    fi
+    SSM_FETCH_NAMES_BY_REGION["${PF_REGION}"]+=" ${PF_PLAIN_NAME}"
+    if [[ -n ${COLOUR} ]]; then
+        SSM_FETCH_NAMES_BY_REGION["${PF_REGION}"]+=" ${PREFIX}/${COLOUR}${PF_RAW_PATH}"
+    fi
+done <<< "${PARAMETERS}"
+
+for PF_REGION in "${!SSM_FETCH_NAMES_BY_REGION[@]}"; do
+    [ -z "${PF_REGION}" ] && continue
+
+    declare -A PF_SEEN=()
+    PF_DEDUPED=()
+    for PF_NAME in ${SSM_FETCH_NAMES_BY_REGION[${PF_REGION}]}; do
+        [ -z "${PF_NAME}" ] && continue
+        if [ -z "${PF_SEEN[${PF_NAME}]:-}" ]; then
+            PF_SEEN["${PF_NAME}"]=1
+            PF_DEDUPED+=("${PF_NAME}")
+        fi
+    done
+    unset PF_SEEN
+
+    PF_TOTAL=${#PF_DEDUPED[@]}
+    PF_INDEX=0
+    while (( PF_INDEX < PF_TOTAL )); do
+        PF_BATCH=("${PF_DEDUPED[@]:${PF_INDEX}:10}")
+        PF_INDEX=$(( PF_INDEX + 10 ))
+
+        PF_RESPONSE=$(aws ssm get-parameters --with-decryption \
+            --names "${PF_BATCH[@]}" --region "${PF_REGION}" --output json 2>&1)
+        PF_EXIT=$?
+        if [[ ${PF_EXIT} -ne 0 ]]; then
+            echo -e "${RED}[SSM]${NOC} Error: get-parameters failed in region ${PF_REGION}: ${PF_RESPONSE}" >&2
+            exit 1
+        fi
+
+        # Emit name/value pairs separated by NUL bytes so that values
+        # containing newlines, tabs, or backslashes (PEM certificates, SSH
+        # keys, JSON blobs, etc.) survive the boundary intact. `@tsv` would
+        # have escaped them into literal `\n`/`\t`/`\\` sequences.
+        while IFS= read -r -d '' PF_NAME && IFS= read -r -d '' PF_VALUE; do
+            [ -z "${PF_NAME}" ] && continue
+            SSM_CACHE["${PF_NAME}|${PF_REGION}"]="${PF_VALUE}"
+        done < <(echo "${PF_RESPONSE}" | jq -j '.Parameters[] | "\(.Name)\u0000\(.Value)\u0000"')
+    done
+done
+
+echo -e "${GREEN}[SSM]${NOC} Pre-fetched ${#SSM_CACHE[@]} parameter(s) across ${#SSM_FETCH_NAMES_BY_REGION[@]} region(s)"
+
+# --- Substitution phase --------------------------------------------------
+# Each placeholder is now a cache lookup. COLOUR-mode behaviour is
+# preserved: prefer the colour-prefixed name, fall back to the plain
+# prefix; if neither resolved, error out with the same shape of message
+# as before.
+
 while read -r PARAM_STRING; do
     [ -z "${PARAM_STRING}" ] && continue # if parameter is empty for some reason
 
@@ -202,19 +289,25 @@ while read -r PARAM_STRING; do
         PARAM_PATH_COLOUR="${PREFIX}/${COLOUR}${PARAM_PATH_COLOUR}"
         echo -e "full path: ${PARAM_PATH_COLOUR}"
 
-        PARAM_OUTPUT="$(aws ssm get-parameter --with-decryption --name ${PARAM_PATH_COLOUR} --output text --query Parameter.Value --region ${REGION} 2>&1)" # Get the parameter value or error message
-        EXIT_CODE=$?
-
-        if [[ ${EXIT_CODE} -ne 0 ]]; then
-            PARAM_OUTPUT="$(aws ssm get-parameter --with-decryption --name ${PARAM_PATH} --output text --query Parameter.Value --region ${REGION} 2>&1)" # Get the parameter value or error message
-            EXIT_CODE=$?
+        if [[ -n "${SSM_CACHE["${PARAM_PATH_COLOUR}|${REGION}"]+x}" ]]; then
+            PARAM_OUTPUT="${SSM_CACHE["${PARAM_PATH_COLOUR}|${REGION}"]}"
+            EXIT_CODE=0
+        elif [[ -n "${SSM_CACHE["${PARAM_PATH}|${REGION}"]+x}" ]]; then
+            PARAM_OUTPUT="${SSM_CACHE["${PARAM_PATH}|${REGION}"]}"
+            EXIT_CODE=0
+        else
+            PARAM_OUTPUT="ParameterNotFound: ${PARAM_PATH_COLOUR} or ${PARAM_PATH}"
+            EXIT_CODE=1
         fi
     else
-        PARAM_OUTPUT="$(aws ssm get-parameter --with-decryption --name ${PARAM_PATH} --output text --query Parameter.Value --region ${REGION} 2>&1)" # Get the parameter value or error message
-        EXIT_CODE=$?
+        if [[ -n "${SSM_CACHE["${PARAM_PATH}|${REGION}"]+x}" ]]; then
+            PARAM_OUTPUT="${SSM_CACHE["${PARAM_PATH}|${REGION}"]}"
+            EXIT_CODE=0
+        else
+            PARAM_OUTPUT="ParameterNotFound: ${PARAM_PATH}"
+            EXIT_CODE=1
+        fi
     fi
-
-
 
     if [[ ${EXIT_CODE} -ne 0 ]]; then
         echo -e "${RED}[SSM]${NOC} Error: Could not get parameter: ${PARAM_PATH}. REGION: ${REGION} AWS cli output: ${PARAM_OUTPUT}" >&2
@@ -222,7 +315,6 @@ while read -r PARAM_STRING; do
     fi
 
     MERGED_TEXT=$(echo -e "${MERGED_TEXT//${PARAM_STRING}/${PARAM_OUTPUT}}")
-    sleep 0.1 # very basic rate limits
 done <<< "${PARAMETERS}"
 
 set +e

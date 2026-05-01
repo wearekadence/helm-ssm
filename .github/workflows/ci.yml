@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: make lint
+
+  integration-tests:
+    name: Integration tests (LocalStack)
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      localstack:
+        image: localstack/localstack:3.8.1
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: ssm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Wait for LocalStack
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:4566/_localstack/health > /dev/null; then
+              echo "LocalStack ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "LocalStack did not become ready" >&2
+          exit 1
+
+      - name: Find LocalStack container name (for log-based call-count assertions)
+        run: |
+          LS=$(docker ps --filter ancestor=localstack/localstack:3.8.1 --format '{{.Names}}' | head -1)
+          if [ -z "${LS}" ]; then
+            echo "Could not find LocalStack container" >&2
+            exit 1
+          fi
+          echo "LOCALSTACK_CONTAINER=${LS}" >> "$GITHUB_ENV"
+
+      - name: Integration tests
+        env:
+          LOCALSTACK_ENDPOINT: http://localhost:4566
+          AWS_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+        run: make test-integration
