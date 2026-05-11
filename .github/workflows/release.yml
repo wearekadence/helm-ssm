@@ -70,3 +70,28 @@ jobs:
             --title "${TAG}" \
             --generate-notes \
             --target master
+
+      - name: Move floating major-version tag (e.g. v1 -> v1.2.0)
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          MAJOR="${TAG%%.*}"   # v1.2.0 -> v1
+
+          # Refuse to drag the float backwards: only update the major-version
+          # tag when the freshly-created TAG is the highest in its v<MAJOR>.x.y
+          # series. Protects against backport releases that legitimately tag an
+          # older line (e.g. tagging v1.1.4 after v1.2.0 already exists).
+          git fetch --tags --force >/dev/null 2>&1 || true
+          HIGHEST=$(git tag -l "${MAJOR}.*" --sort=-v:refname | head -1)
+
+          if [ "${HIGHEST}" != "${TAG}" ]; then
+            echo "Skipping ${MAJOR} update — ${TAG} is not the highest in the ${MAJOR}.x.y series (current highest: ${HIGHEST})."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f -a "${MAJOR}" -m "${MAJOR} -> ${TAG}" "${TAG}^{}"
+          git push -f origin "${MAJOR}"
+          echo "Moved floating tag ${MAJOR} to ${TAG}."
