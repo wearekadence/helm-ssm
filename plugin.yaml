@@ -1,5 +1,5 @@
 name: "ssm"
-version: "1.1.0"
+version: "1.2.0"
 usage: "AWS SSM parameter injection into Helm value files for git storage"
 description: |-
   AWS SSM parameter injection in Helm value files
@@ -35,5 +35,12 @@ description: |-
 
   E.g:
   helm ssm install stable/docker-registry --values value-file1.yaml -f value-file2.yaml -p "/some/prefix/path"
+
+  Optional parameters:
+  Append the literal word 'optional' to a placeholder to mark it as non-fatal —
+  if the parameter does not exist in SSM, the placeholder is replaced with an
+  empty string and a warning is logged instead of aborting the run.
+
+      {{ssm /maybe/missing us-east-1 optional}}
 command: "$HELM_PLUGIN_DIR/ssm.sh"
 useTunnel: true

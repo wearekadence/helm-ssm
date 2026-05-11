@@ -55,6 +55,17 @@ If your SSM parameters have a preset you can specify it at run time using the -p
 
 E.g:
 helm ssm install stable/docker-registry --values value-file1.yaml -f value-file2.yaml -p "/some/prefix/path"
+
+Optional parameters:
+Append the literal word 'optional' to a placeholder to mark it as non-fatal —
+if the parameter does not exist in SSM, the placeholder is replaced with an
+empty string and a warning is logged instead of aborting the run.
+
+    {{ssm /maybe/missing us-east-1 optional}}
+
+The flag also works with the global -r/--region override:
+
+    {{ssm /maybe/missing optional}}    # requires -r/--region to be set
 EOF
     exit 0
 }
@@ -209,6 +220,13 @@ while read -r PARAM_STRING; do
     else
         PF_REGION=$(echo ${PF_CLEANED:2} | cut -d' ' -f 3)
     fi
+    # When the user writes `{{ssm /path optional}}` with no global region,
+    # token 3 is the literal flag, not a region. Fail loudly instead of
+    # calling AWS with `--region optional`.
+    if [[ "${PF_REGION}" == "optional" ]]; then
+        echo -e "${RED}[SSM]${NOC} Error: 'optional' flag found in the region slot of '${PARAM_STRING}'. Either supply -r/--region or write '{{ssm /path <region> optional}}'." >&2
+        exit 1
+    fi
     if [[ ! -f ${PREFIX} ]]; then
         PF_PLAIN_NAME="${PREFIX}${PF_RAW_PATH}"
     else
@@ -278,6 +296,20 @@ while read -r PARAM_STRING; do
     else
         REGION=$(echo ${CLEANED_PARAM_STRING:2} | cut -d' ' -f 3) # {{ssm /param/path *us-east-1*}}
     fi
+    if [[ "${REGION}" == "optional" ]]; then
+        echo -e "${RED}[SSM]${NOC} Error: 'optional' flag found in the region slot of '${PARAM_STRING}'. Either supply -r/--region or write '{{ssm /path <region> optional}}'." >&2
+        exit 1
+    fi
+
+    # Detect trailing `optional` flag. Works whether it appears as token 3
+    # (with -r) or token 4 (with an explicit region in the placeholder).
+    IS_OPTIONAL=0
+    for TRAILING_TOKEN in $(echo ${CLEANED_PARAM_STRING:2} | cut -d' ' -f 3-); do
+        if [[ "${TRAILING_TOKEN}" == "optional" ]]; then
+            IS_OPTIONAL=1
+            break
+        fi
+    done
 
     if [[ ! -f ${PREFIX} ]]; then
         PARAM_PATH="${PREFIX}${PARAM_PATH}"
@@ -310,8 +342,13 @@ while read -r PARAM_STRING; do
     fi
 
     if [[ ${EXIT_CODE} -ne 0 ]]; then
-        echo -e "${RED}[SSM]${NOC} Error: Could not get parameter: ${PARAM_PATH}. REGION: ${REGION} AWS cli output: ${PARAM_OUTPUT}" >&2
-        exit 1
+        if [[ ${IS_OPTIONAL} -eq 1 ]]; then
+            echo -e "${YELLOW}[SSM]${NOC} Optional parameter not found, substituting empty string: ${PARAM_PATH} (region: ${REGION})" >&2
+            PARAM_OUTPUT=""
+        else
+            echo -e "${RED}[SSM]${NOC} Error: Could not get parameter: ${PARAM_PATH}. REGION: ${REGION} AWS cli output: ${PARAM_OUTPUT}" >&2
+            exit 1
+        fi
     fi
 
     MERGED_TEXT=$(echo -e "${MERGED_TEXT//${PARAM_STRING}/${PARAM_OUTPUT}}")

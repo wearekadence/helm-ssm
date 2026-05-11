@@ -232,6 +232,61 @@ fi
 end_test
 cleanup_seeded
 
+start_test "optional flag: missing param substitutes empty string"
+cat >/tmp/it_values_optional_missing.yaml <<EOF
+a: "{{ssm /it/optional/does-not-exist us-east-1 optional}}"
+EOF
+run_ssm install testrelease ./tests/testchart --values /tmp/it_values_optional_missing.yaml
+assert_eq "0" "${RUN_EXIT}" "exit code"
+assert_contains 'a: ""' "${RUN_OUTPUT}"
+assert_contains "Optional parameter not found" "${RUN_OUTPUT}"
+end_test
+cleanup_seeded
+
+start_test "optional flag: present param resolves normally"
+put_param "/it/optional/present" "i-exist"
+cat >/tmp/it_values_optional_present.yaml <<EOF
+a: "{{ssm /it/optional/present us-east-1 optional}}"
+EOF
+run_ssm install testrelease ./tests/testchart --values /tmp/it_values_optional_present.yaml
+assert_eq "0" "${RUN_EXIT}" "exit code"
+assert_contains 'a: "i-exist"' "${RUN_OUTPUT}"
+end_test
+cleanup_seeded
+
+start_test "optional flag: mixed required + missing-optional in one file"
+put_param "/it/optional/mixed-required" "required-value"
+cat >/tmp/it_values_optional_mixed.yaml <<EOF
+required: "{{ssm /it/optional/mixed-required us-east-1}}"
+maybe: "{{ssm /it/optional/mixed-missing us-east-1 optional}}"
+EOF
+run_ssm install testrelease ./tests/testchart --values /tmp/it_values_optional_mixed.yaml
+assert_eq "0" "${RUN_EXIT}" "exit code"
+assert_contains 'required: "required-value"' "${RUN_OUTPUT}"
+assert_contains 'maybe: ""' "${RUN_OUTPUT}"
+end_test
+cleanup_seeded
+
+start_test "optional flag: works with global -r/--region (no inline region)"
+cat >/tmp/it_values_optional_global_region.yaml <<EOF
+maybe: "{{ssm /it/optional/missing-with-r optional}}"
+EOF
+run_ssm install testrelease ./tests/testchart --values /tmp/it_values_optional_global_region.yaml -r us-east-1
+assert_eq "0" "${RUN_EXIT}" "exit code"
+assert_contains 'maybe: ""' "${RUN_OUTPUT}"
+end_test
+cleanup_seeded
+
+start_test "optional flag in region slot without -r errors clearly"
+cat >/tmp/it_values_optional_no_region.yaml <<EOF
+maybe: "{{ssm /it/optional/missing-no-region optional}}"
+EOF
+run_ssm install testrelease ./tests/testchart --values /tmp/it_values_optional_no_region.yaml
+assert_eq "1" "${RUN_EXIT}" "exit code"
+assert_contains "'optional' flag found in the region slot" "${RUN_OUTPUT}"
+end_test
+cleanup_seeded
+
 start_test "duplicate placeholder dedupes in pre-fetch"
 put_param "/it/dup/p1" "dup-value"
 cat >/tmp/it_values_dup.yaml <<EOF

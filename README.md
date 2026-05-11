@@ -52,7 +52,35 @@ the -r or --region flags followed by a region string e.g. eu-west-1
 E.g:
 helm ssm install stable/docker-registry --values value-file1.yaml -f value-file2.yaml -p "/some/prefix/path" -r "eu-west-1"
 
+## Optional parameters
+Append the literal word `optional` to a placeholder to mark it as non-fatal. If the parameter does not exist in
+SSM, the placeholder is replaced with an empty string and a warning is logged instead of aborting the run.
+
+```
+secrets:
+  required:    "{{ssm /always/present us-east-1}}"
+  maybe:       "{{ssm /maybe/missing us-east-1 optional}}"
+```
+
+Works with the global `-r/--region` flag too — drop the region from the placeholder:
+```
+secrets:
+  maybe: "{{ssm /maybe/missing optional}}"
+```
+```
+helm ssm install ... -r "eu-west-1"
+```
+
 ## Testing
 ```
 $ ./ssm.sh install tests/testchart/ --debug --dry-run -f tests/testchart/values.yaml
 ```
+
+## Releasing
+Bump the `version:` field in `plugin.yaml` as part of your feature PR. On merge to
+`master`, `.github/workflows/release.yml` reads that field and creates a matching
+`v<version>` git tag + GitHub release if one does not already exist. Forgetting to
+bump simply means no new release — never a CI failure.
+
+Consumers (e.g. ami-packer, docker-images) pin by commit SHA today; once tags are
+in place they may pin by tag instead (`helm plugin install ... --version vX.Y.Z`).
