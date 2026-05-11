@@ -1,0 +1,72 @@
+name: Release
+
+# Tags master with `v<version>` after merge, where <version> is read from
+# `plugin.yaml`. Idempotent: if the tag already exists the job is a no-op,
+# so re-runs are safe and forgetting to bump plugin.yaml in a feature PR
+# just means no new release — never a failure.
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Tag release from plugin.yaml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Read version from plugin.yaml
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -E '^version:' plugin.yaml | head -1 | sed -E 's/^version:[[:space:]]*"([^"]+)".*/\1/')
+          if [ -z "${VERSION}" ]; then
+            echo "Could not parse version from plugin.yaml" >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "Detected: ${TAG}"
+
+      - name: Check whether tag already exists
+        id: check
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "Tag ${TAG} already exists — nothing to do."
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "${TAG}"
+          git push origin "${TAG}"
+
+      - name: Create GitHub release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --target master

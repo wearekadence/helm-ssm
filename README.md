@@ -75,3 +75,12 @@ helm ssm install ... -r "eu-west-1"
 ```
 $ ./ssm.sh install tests/testchart/ --debug --dry-run -f tests/testchart/values.yaml
 ```
+
+## Releasing
+Bump the `version:` field in `plugin.yaml` as part of your feature PR. On merge to
+`master`, `.github/workflows/release.yml` reads that field and creates a matching
+`v<version>` git tag + GitHub release if one does not already exist. Forgetting to
+bump simply means no new release — never a CI failure.
+
+Consumers (e.g. ami-packer, docker-images) pin by commit SHA today; once tags are
+in place they may pin by tag instead (`helm plugin install ... --version vX.Y.Z`).
