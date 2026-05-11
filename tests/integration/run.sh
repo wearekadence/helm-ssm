@@ -258,7 +258,7 @@ start_test "optional flag: mixed required + missing-optional in one file"
 put_param "/it/optional/mixed-required" "required-value"
 cat >/tmp/it_values_optional_mixed.yaml <<EOF
 required: "{{ssm /it/optional/mixed-required us-east-1}}"
-maybe:    "{{ssm /it/optional/mixed-missing us-east-1 optional}}"
+maybe: "{{ssm /it/optional/mixed-missing us-east-1 optional}}"
 EOF
 run_ssm install testrelease ./tests/testchart --values /tmp/it_values_optional_mixed.yaml
 assert_eq "0" "${RUN_EXIT}" "exit code"
