@@ -27,7 +27,7 @@ This plugin provides the ability to encode AWS SSM parameter paths into your
 value files to store in version control or just generally less secure places.
 
 During installation or upgrade, the parameters are replaced with their actual values
-and passed on to Tiller.
+and passed on to Helm.
 
 Usage:
 Simply use helm as you would normally, but add 'ssm' before any command,
